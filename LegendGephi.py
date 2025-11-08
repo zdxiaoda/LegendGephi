@@ -10,6 +10,7 @@ import sys
 import argparse
 import os
 import re
+import logging
 
 def parse_gexf(gexf_file):
     """
@@ -37,7 +38,7 @@ def parse_gexf(gexf_file):
     # 查找所有节点（节点在gexf命名空间下）
     nodes = root.findall(f'.//{{{gexf_ns}}}node')
     
-    print(f"找到 {len(nodes)} 个节点\n")
+    logging.info(f"Found {len(nodes)} nodes\n")
     
     # 遍历每个节点
     for node in nodes:
@@ -64,9 +65,9 @@ def parse_gexf(gexf_file):
                 layer_color_map[layer] = color
             elif layer_color_map[layer] != color:
                 # 如果同一个layer有不同的color，打印警告
-                print(f"警告: layer '{layer}' 有不同的颜色值!")
-                print(f"  已有颜色: {layer_color_map[layer]}")
-                print(f"  新颜色: {color}\n")
+                logging.warning(f"Warning: layer '{layer}' has different color values!")
+                logging.warning(f"  Existing color: {layer_color_map[layer]}")
+                logging.warning(f"  New color: {color}\n")
     
     return layer_color_map
 
@@ -158,7 +159,7 @@ def adjust_node_labels_in_tree(tree, root):
     labels_group = root.find(f'.//{{{svg_ns}}}g[@id="node-labels"]')
     
     if nodes_group is None or labels_group is None:
-        print("警告: 未找到节点或标签组，跳过文本换行处理")
+        logging.warning("Warning: Nodes or labels group not found, skipping text wrapping")
         return 0
     
     # 创建节点ID到节点信息的映射
@@ -219,7 +220,7 @@ def adjust_node_labels_in_tree(tree, root):
                     tspan.text = line
                 
                 modified_count += 1
-                print(f"  已换行节点 '{node_class}': {text_content[:30]}...")
+                logging.info(f"  Wrapped node '{node_class}': {text_content[:30]}...")
     
     return modified_count
 
@@ -241,12 +242,12 @@ def add_legend_to_svg(svg_file, layer_color_map, output_file=None):
     root = tree.getroot()
     
     # 先进行节点标签换行调整
-    print("检查并调整节点标签文本...")
+    logging.info("Checking and adjusting node label text...")
     modified_count = adjust_node_labels_in_tree(tree, root)
     if modified_count > 0:
-        print(f"已调整 {modified_count} 个节点标签的文本换行\n")
+        logging.info(f"Adjusted text wrapping for {modified_count} node labels\n")
     else:
-        print("所有节点标签文本都已适应节点直径，无需调整\n")
+        logging.info("All node label texts already fit within node diameter, no adjustment needed\n")
     
     # 获取SVG的viewBox属性
     viewbox = root.get('viewBox', '').split()
@@ -343,7 +344,7 @@ def add_legend_to_svg(svg_file, layer_color_map, output_file=None):
     if os.path.abspath(output_path) == os.path.abspath(svg_file):
         base_name = os.path.splitext(svg_file)[0]
         output_path = f"{base_name}_with_legend.svg"
-        print(f"警告: 输出文件不能与源文件相同，已自动重命名为: {output_path}")
+        logging.warning(f"Warning: Output file cannot be the same as source file, automatically renamed to: {output_path}")
     
     # 使用原始格式保存，保持DOCTYPE声明
     ET.register_namespace('', svg_ns)
@@ -370,7 +371,7 @@ def add_legend_to_svg(svg_file, layer_color_map, output_file=None):
     
     # 保存文件（只保存一次，包含换行调整和图例）
     tree.write(output_path, encoding='utf-8', xml_declaration=True)
-    print(f"已保存SVG文件（包含换行调整和图例）: {output_path}")
+    logging.info(f"Saved SVG file (with text wrapping and legend): {output_path}")
     
     return output_path
 
@@ -386,8 +387,8 @@ def svg_to_png(svg_file, png_file=None, dpi=300):
     try:
         import cairosvg
     except ImportError:
-        print("错误: 需要安装 cairosvg 库才能转换PNG")
-        print("请运行: uv pip install cairosvg")
+        logging.error("Error: cairosvg library is required to convert PNG")
+        logging.error("Please run: uv pip install cairosvg")
         return False
     
     if png_file is None:
@@ -397,67 +398,74 @@ def svg_to_png(svg_file, png_file=None, dpi=300):
     
     try:
         cairosvg.svg2png(url=svg_file, write_to=png_file, dpi=dpi)
-        print(f"SVG已转换为PNG: {png_file} (DPI: {dpi})")
+        logging.info(f"SVG converted to PNG: {png_file} (DPI: {dpi})")
         return True
     except Exception as e:
-        print(f"错误: SVG转PNG失败 - {e}")
+        logging.error(f"Error: SVG to PNG conversion failed - {e}")
         return False
 
 def main():
     """主函数"""
-    parser = argparse.ArgumentParser(description='解析GEXF文件并在SVG文件中添加图例')
-    parser.add_argument('gexf_file', help='GEXF文件路径')
-    parser.add_argument('svg_file', help='SVG文件路径')
-    parser.add_argument('-o', '--output', help='输出SVG文件路径（默认自动生成新文件名，不覆盖原文件）')
-    parser.add_argument('-p', '--png', action='store_true', help='将SVG转换为PNG')
-    parser.add_argument('--png-output', help='PNG输出文件路径（默认自动生成）')
-    parser.add_argument('--dpi', type=int, default=300, help='PNG输出分辨率（默认300）')
+    # 配置logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(levelname)s: %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    parser = argparse.ArgumentParser(description='Parse GEXF file and add legend to SVG file')
+    parser.add_argument('gexf_file', help='GEXF file path')
+    parser.add_argument('svg_file', help='SVG file path')
+    parser.add_argument('-o', '--output', help='Output SVG file path (default: auto-generate new filename, does not overwrite source file)')
+    parser.add_argument('-p', '--png', action='store_true', help='Convert SVG to PNG')
+    parser.add_argument('--png-output', help='PNG output file path (default: auto-generate)')
+    parser.add_argument('--dpi', type=int, default=300, help='PNG output resolution (default: 300)')
     
     args = parser.parse_args()
     
-    print("=" * 60)
-    print("解析GEXF文件 - 提取Layer和Color信息")
-    print("=" * 60)
-    print()
+    logging.info("=" * 60)
+    logging.info("Parsing GEXF file - Extracting Layer and Color information")
+    logging.info("=" * 60)
+    logging.info("")
     
     try:
         # 解析GEXF文件
         layer_color_map = parse_gexf(args.gexf_file)
         
         # 输出结果
-        print("=" * 60)
-        print("Layer 和对应的 Color:")
-        print("=" * 60)
-        print()
+        logging.info("=" * 60)
+        logging.info("Layer and corresponding Color:")
+        logging.info("=" * 60)
+        logging.info("")
         
         for layer, color in sorted(layer_color_map.items()):
-            print(f"Layer: {layer}")
-            print(f"Color: {color}")
-            print("-" * 60)
+            logging.info(f"Layer: {layer}")
+            logging.info(f"Color: {color}")
+            logging.info("-" * 60)
         
-        print(f"\n总共找到 {len(layer_color_map)} 个不同的Layer")
-        print()
+        logging.info(f"\nFound {len(layer_color_map)} different Layers")
+        logging.info("")
         
         # 在SVG文件中添加图例并调整节点标签（只保存一个文件）
-        print("=" * 60)
-        print("处理SVG文件（换行调整和图例添加）...")
-        print("=" * 60)
+        logging.info("=" * 60)
+        logging.info("Processing SVG file (text wrapping and legend addition)...")
+        logging.info("=" * 60)
         output_svg = add_legend_to_svg(args.svg_file, layer_color_map, args.output)
         
         # 如果指定了PNG转换，则转换
         if args.png:
-            print()
-            print("=" * 60)
-            print("将SVG转换为PNG...")
-            print("=" * 60)
+            logging.info("")
+            logging.info("=" * 60)
+            logging.info("Converting SVG to PNG...")
+            logging.info("=" * 60)
             svg_to_png(output_svg, args.png_output, args.dpi)
         
     except FileNotFoundError as e:
-        print(f"错误: 找不到文件 - {e}")
+        logging.error(f"Error: File not found - {e}")
     except ET.ParseError as e:
-        print(f"错误: XML解析失败 - {e}")
+        logging.error(f"Error: XML parsing failed - {e}")
     except Exception as e:
-        print(f"错误: {e}")
+        logging.error(f"Error: {e}")
         import traceback
         traceback.print_exc()
 
