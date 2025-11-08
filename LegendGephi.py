@@ -9,6 +9,7 @@ import xml.etree.ElementTree as ET
 import sys
 import argparse
 import os
+import re
 
 def parse_gexf(gexf_file):
     """
@@ -68,6 +69,190 @@ def parse_gexf(gexf_file):
                 print(f"  新颜色: {color}\n")
     
     return layer_color_map
+
+def estimate_text_width(text, font_size, font_family='Times New Roman'):
+    """
+    估算文本宽度
+    
+    Args:
+        text: 文本内容
+        font_size: 字体大小
+        font_family: 字体族
+    
+    Returns:
+        float: 估算的文本宽度
+    """
+    # 对于Times New Roman等比例字体，使用0.6作为平均字符宽度系数
+    # 这个系数可以根据实际字体调整
+    char_width_factor = 0.6
+    
+    # 计算文本宽度（字符数 × 字体大小 × 系数）
+    text_width = len(text) * float(font_size) * char_width_factor
+    return text_width
+
+def wrap_text_to_fit_diameter(text, font_size, node_diameter, font_family='Times New Roman'):
+    """
+    将文本换行以适应节点直径
+    
+    Args:
+        text: 原始文本
+        font_size: 字体大小
+        node_diameter: 节点直径
+        font_family: 字体族
+    
+    Returns:
+        list: 换行后的文本行列表
+    """
+    # 如果文本宽度小于节点直径，不需要换行
+    text_width = estimate_text_width(text, font_size, font_family)
+    if text_width <= node_diameter:
+        return [text]
+    
+    # 需要换行，按单词分割文本
+    words = text.split()
+    if not words:
+        return [text]
+    
+    lines = []
+    current_line = []
+    current_width = 0
+    
+    # 单词间距的宽度（大约为字体大小的0.3倍）
+    space_width = float(font_size) * 0.3
+    
+    for word in words:
+        word_width = estimate_text_width(word, font_size, font_family)
+        
+        # 如果当前行加上这个单词会超过节点直径，开始新行
+        if current_line and current_width + space_width + word_width > node_diameter:
+            lines.append(' '.join(current_line))
+            current_line = [word]
+            current_width = word_width
+        else:
+            if current_line:
+                current_width += space_width
+            current_line.append(word)
+            current_width += word_width
+    
+    # 添加最后一行
+    if current_line:
+        lines.append(' '.join(current_line))
+    
+    return lines
+
+def adjust_node_labels(svg_file, output_file=None):
+    """
+    调整SVG文件中节点标签的文本，使其适应节点直径
+    
+    Args:
+        svg_file: SVG文件路径
+        output_file: 输出文件路径，如果为None则覆盖原文件
+    """
+    svg_ns = 'http://www.w3.org/2000/svg'
+    
+    # 解析SVG文件
+    tree = ET.parse(svg_file)
+    root = tree.getroot()
+    
+    # 查找节点组和标签组
+    nodes_group = root.find(f'.//{{{svg_ns}}}g[@id="nodes"]')
+    labels_group = root.find(f'.//{{{svg_ns}}}g[@id="node-labels"]')
+    
+    if nodes_group is None or labels_group is None:
+        print("警告: 未找到节点或标签组，跳过文本换行处理")
+        return svg_file
+    
+    # 创建节点ID到节点信息的映射
+    node_map = {}
+    for circle in nodes_group.findall(f'.//{{{svg_ns}}}circle'):
+        node_class = circle.get('class', '')
+        node_r = float(circle.get('r', '0'))
+        node_diameter = node_r * 2  # 直径 = 半径 × 2
+        node_map[node_class] = node_diameter
+    
+    # 处理每个文本标签
+    modified_count = 0
+    for text_elem in labels_group.findall(f'.//{{{svg_ns}}}text'):
+        node_class = text_elem.get('class', '')
+        if node_class not in node_map:
+            continue
+        
+        # 获取文本内容和字体大小
+        text_content = (text_elem.text or '').strip()
+        if not text_content:
+            continue
+        
+        font_size = float(text_elem.get('font-size', '12'))
+        font_family = text_elem.get('font-family', 'Times New Roman')
+        node_diameter = node_map[node_class]
+        
+        # 检查是否需要换行
+        text_width = estimate_text_width(text_content, font_size, font_family)
+        if text_width > node_diameter:
+            # 需要换行
+            lines = wrap_text_to_fit_diameter(text_content, font_size, node_diameter, font_family)
+            
+            if len(lines) > 1:
+                # 获取原始位置和样式
+                x = text_elem.get('x', '0')
+                y = text_elem.get('y', '0')
+                fill = text_elem.get('fill', '#000000')
+                style = text_elem.get('style', '')
+                
+                # 计算行高（字体大小的1.2倍）
+                line_height = font_size * 1.2
+                
+                # 计算总高度，用于垂直居中
+                total_height = (len(lines) - 1) * line_height
+                start_y = float(y) - total_height / 2
+                
+                # 清除原始文本内容
+                text_elem.text = None
+                
+                # 为每一行创建tspan元素
+                for i, line in enumerate(lines):
+                    tspan = ET.SubElement(text_elem, f'{{{svg_ns}}}tspan', {
+                        'x': x,
+                        'y': str(start_y + i * line_height),
+                        'text-anchor': 'middle',
+                        'dominant-baseline': 'central'
+                    })
+                    tspan.text = line
+                
+                modified_count += 1
+                print(f"  已换行节点 '{node_class}': {text_content[:30]}...")
+    
+    if modified_count > 0:
+        # 保存文件
+        output_path = output_file if output_file else svg_file
+        ET.register_namespace('', svg_ns)
+        
+        # 美化XML输出
+        def indent(elem, level=0):
+            """美化XML输出"""
+            i = "\n" + level * "  "
+            if len(elem):
+                if not elem.text or not elem.text.strip():
+                    elem.text = i + "  "
+                if not elem.tail or not elem.tail.strip():
+                    elem.tail = i
+                for child in elem:
+                    indent(child, level+1)
+                if not child.tail or not child.tail.strip():
+                    child.tail = i
+            else:
+                if level and (not elem.tail or not elem.tail.strip()):
+                    elem.tail = i
+        
+        # 美化整个文档
+        indent(root)
+        
+        tree.write(output_path, encoding='utf-8', xml_declaration=True)
+        print(f"\n已调整 {modified_count} 个节点标签的文本换行")
+        return output_path
+    else:
+        print("所有节点标签文本都已适应节点直径，无需调整")
+        return svg_file
 
 def add_legend_to_svg(svg_file, layer_color_map, output_file=None):
     """
@@ -264,11 +449,18 @@ def main():
         print(f"\n总共找到 {len(layer_color_map)} 个不同的Layer")
         print()
         
+        # 先调整节点标签文本，使其适应节点直径
+        print("=" * 60)
+        print("检查并调整节点标签文本...")
+        print("=" * 60)
+        adjusted_svg = adjust_node_labels(args.svg_file)
+        
         # 在SVG文件中添加图例
+        print()
         print("=" * 60)
         print("在SVG文件中添加图例...")
         print("=" * 60)
-        output_svg = add_legend_to_svg(args.svg_file, layer_color_map, args.output)
+        output_svg = add_legend_to_svg(adjusted_svg, layer_color_map, args.output)
         
         # 如果指定了PNG转换，则转换
         if args.png:
