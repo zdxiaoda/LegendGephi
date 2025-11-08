@@ -140,19 +140,18 @@ def wrap_text_to_fit_diameter(text, font_size, node_diameter, font_family='Times
     
     return lines
 
-def adjust_node_labels(svg_file, output_file=None):
+def adjust_node_labels_in_tree(tree, root):
     """
-    调整SVG文件中节点标签的文本，使其适应节点直径
+    在内存中调整SVG树中节点标签的文本，使其适应节点直径（不保存文件）
     
     Args:
-        svg_file: SVG文件路径
-        output_file: 输出文件路径，如果为None则覆盖原文件
+        tree: ElementTree对象
+        root: 根元素
+    
+    Returns:
+        int: 修改的节点数量
     """
     svg_ns = 'http://www.w3.org/2000/svg'
-    
-    # 解析SVG文件
-    tree = ET.parse(svg_file)
-    root = tree.getroot()
     
     # 查找节点组和标签组
     nodes_group = root.find(f'.//{{{svg_ns}}}g[@id="nodes"]')
@@ -160,7 +159,7 @@ def adjust_node_labels(svg_file, output_file=None):
     
     if nodes_group is None or labels_group is None:
         print("警告: 未找到节点或标签组，跳过文本换行处理")
-        return svg_file
+        return 0
     
     # 创建节点ID到节点信息的映射
     node_map = {}
@@ -222,46 +221,17 @@ def adjust_node_labels(svg_file, output_file=None):
                 modified_count += 1
                 print(f"  已换行节点 '{node_class}': {text_content[:30]}...")
     
-    if modified_count > 0:
-        # 保存文件
-        output_path = output_file if output_file else svg_file
-        ET.register_namespace('', svg_ns)
-        
-        # 美化XML输出
-        def indent(elem, level=0):
-            """美化XML输出"""
-            i = "\n" + level * "  "
-            if len(elem):
-                if not elem.text or not elem.text.strip():
-                    elem.text = i + "  "
-                if not elem.tail or not elem.tail.strip():
-                    elem.tail = i
-                for child in elem:
-                    indent(child, level+1)
-                if not child.tail or not child.tail.strip():
-                    child.tail = i
-            else:
-                if level and (not elem.tail or not elem.tail.strip()):
-                    elem.tail = i
-        
-        # 美化整个文档
-        indent(root)
-        
-        tree.write(output_path, encoding='utf-8', xml_declaration=True)
-        print(f"\n已调整 {modified_count} 个节点标签的文本换行")
-        return output_path
-    else:
-        print("所有节点标签文本都已适应节点直径，无需调整")
-        return svg_file
+    return modified_count
 
 def add_legend_to_svg(svg_file, layer_color_map, output_file=None):
     """
-    在SVG文件的右上方添加图例
+    在SVG文件的右上方添加图例，同时进行节点标签换行调整
+    只保存一个文件，不修改源文件
     
     Args:
         svg_file: SVG文件路径
         layer_color_map: layer到color的映射字典
-        output_file: 输出文件路径，如果为None则覆盖原文件
+        output_file: 输出文件路径，如果为None则自动生成新文件名（不覆盖原文件）
     """
     # SVG命名空间
     svg_ns = 'http://www.w3.org/2000/svg'
@@ -269,6 +239,14 @@ def add_legend_to_svg(svg_file, layer_color_map, output_file=None):
     # 解析SVG文件
     tree = ET.parse(svg_file)
     root = tree.getroot()
+    
+    # 先进行节点标签换行调整
+    print("检查并调整节点标签文本...")
+    modified_count = adjust_node_labels_in_tree(tree, root)
+    if modified_count > 0:
+        print(f"已调整 {modified_count} 个节点标签的文本换行\n")
+    else:
+        print("所有节点标签文本都已适应节点直径，无需调整\n")
     
     # 获取SVG的viewBox属性
     viewbox = root.get('viewBox', '').split()
@@ -354,8 +332,19 @@ def add_legend_to_svg(svg_file, layer_color_map, output_file=None):
     # 将图例添加到SVG根元素
     root.append(legend_group)
     
-    # 保存文件（保持原始格式）
-    output_path = output_file if output_file else svg_file
+    # 确定输出文件路径（确保不覆盖源文件）
+    if output_file is None:
+        base_name = os.path.splitext(svg_file)[0]
+        output_path = f"{base_name}_with_legend.svg"
+    else:
+        output_path = output_file
+    
+    # 确保输出文件路径不等于源文件路径
+    if os.path.abspath(output_path) == os.path.abspath(svg_file):
+        base_name = os.path.splitext(svg_file)[0]
+        output_path = f"{base_name}_with_legend.svg"
+        print(f"警告: 输出文件不能与源文件相同，已自动重命名为: {output_path}")
+    
     # 使用原始格式保存，保持DOCTYPE声明
     ET.register_namespace('', svg_ns)
     
@@ -376,12 +365,12 @@ def add_legend_to_svg(svg_file, layer_color_map, output_file=None):
             if level and (not elem.tail or not elem.tail.strip()):
                 elem.tail = i
     
-    # 美化图例组
-    indent(legend_group, 1)
+    # 美化整个文档
+    indent(root)
     
-    # 保存文件
+    # 保存文件（只保存一次，包含换行调整和图例）
     tree.write(output_path, encoding='utf-8', xml_declaration=True)
-    print(f"图例已添加到SVG文件: {output_path}")
+    print(f"已保存SVG文件（包含换行调整和图例）: {output_path}")
     
     return output_path
 
@@ -419,7 +408,7 @@ def main():
     parser = argparse.ArgumentParser(description='解析GEXF文件并在SVG文件中添加图例')
     parser.add_argument('gexf_file', help='GEXF文件路径')
     parser.add_argument('svg_file', help='SVG文件路径')
-    parser.add_argument('-o', '--output', help='输出SVG文件路径（默认覆盖原文件）')
+    parser.add_argument('-o', '--output', help='输出SVG文件路径（默认自动生成新文件名，不覆盖原文件）')
     parser.add_argument('-p', '--png', action='store_true', help='将SVG转换为PNG')
     parser.add_argument('--png-output', help='PNG输出文件路径（默认自动生成）')
     parser.add_argument('--dpi', type=int, default=300, help='PNG输出分辨率（默认300）')
@@ -449,18 +438,11 @@ def main():
         print(f"\n总共找到 {len(layer_color_map)} 个不同的Layer")
         print()
         
-        # 先调整节点标签文本，使其适应节点直径
+        # 在SVG文件中添加图例并调整节点标签（只保存一个文件）
         print("=" * 60)
-        print("检查并调整节点标签文本...")
+        print("处理SVG文件（换行调整和图例添加）...")
         print("=" * 60)
-        adjusted_svg = adjust_node_labels(args.svg_file)
-        
-        # 在SVG文件中添加图例
-        print()
-        print("=" * 60)
-        print("在SVG文件中添加图例...")
-        print("=" * 60)
-        output_svg = add_legend_to_svg(adjusted_svg, layer_color_map, args.output)
+        output_svg = add_legend_to_svg(args.svg_file, layer_color_map, args.output)
         
         # 如果指定了PNG转换，则转换
         if args.png:
