@@ -286,6 +286,9 @@ def adjust_node_labels_in_tree(tree, root, auto_font_size=False, min_font_size=N
         if not text_content:
             continue
         
+        # 首字母大写
+        text_content = text_content.capitalize()
+        
         font_size = float(text_elem.get('font-size', '12'))
         font_family = text_elem.get('font-family', 'Times New Roman')
         node_diameter = node_map[node_class]
@@ -342,8 +345,9 @@ def adjust_node_labels_in_tree(tree, root, auto_font_size=False, min_font_size=N
         else:
             lines_to_use = [text_content]
         
-        # 第三步：如果需要换行，进行换行处理
+        # 第三步：更新文本内容（应用首字母大写）
         if len(lines_to_use) > 1:
+            # 多行情况：使用tspan元素
             # 计算行高（字体大小的1.2倍）
             line_height = font_size * 1.2
             
@@ -370,6 +374,9 @@ def adjust_node_labels_in_tree(tree, root, auto_font_size=False, min_font_size=N
             else:
                 modified_count += 1
             logging.info(f"  Wrapped node '{node_class}': {text_content[:30]}...")
+        else:
+            # 单行情况：直接更新文本元素
+            text_elem.text = text_content
     
     return modified_count
 
@@ -429,22 +436,25 @@ def add_legend_to_svg(svg_file, layer_color_map, output_file=None, auto_font_siz
         min_x = -width / 2
         min_y = -height / 2
     
-    # 计算右上角位置（留一些边距）
+    # 计算右下角位置（留一些边距）
     margin = 50
     # 增大图例尺寸
-    legend_width = 300  # 图例宽度增加到300
+    legend_width = 300  # 图例宽度
     legend_x = min_x + width - legend_width - margin
-    legend_y = min_y + margin
+    
+    # 图例参数
+    title_font_size = 30  # 标题字体大小
+    item_font_size = 22   # 项目字体大小
+    color_box_size = 28   # 颜色方块大小
+    item_spacing = 50     # 项目间距
+    padding = 15          # 内边距
+    
+    # 首先计算图例高度来确定 legend_y
+    bg_height_temp = len(layer_color_map) * item_spacing + padding * 2 + title_font_size + 10
+    legend_y = min_y + height - bg_height_temp - margin  # 右下角位置
     
     # 创建图例组（使用SVG命名空间）
     legend_group = ET.Element(f'{{{svg_ns}}}g', {'id': 'legend', 'class': 'legend'})
-    
-    # 图例参数（增大尺寸）
-    title_font_size = 20  # 标题字体大小
-    item_font_size = 16   # 项目字体大小
-    color_box_size = 24   # 颜色方块大小
-    item_spacing = 40     # 项目间距
-    padding = 15          # 内边距
     
     # 图例背景（白色半透明背景）
     bg_height = len(layer_color_map) * item_spacing + padding * 2 + title_font_size + 10
