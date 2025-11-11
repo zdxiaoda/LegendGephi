@@ -141,10 +141,43 @@ def wrap_text_to_fit_diameter(text, font_size, node_diameter, font_family='Times
     
     return lines
 
+def can_fit_with_wrapping(text, font_size, node_diameter, font_family='Times New Roman'):
+    """
+    检查通过换行，文本是否能在指定字体大小下适应节点
+    
+    Args:
+        text: 文本内容
+        font_size: 字体大小
+        node_diameter: 节点直径
+        font_family: 字体族
+    
+    Returns:
+        tuple: (是否适应, 换行后的行列表)
+    """
+    # 尝试换行
+    lines = wrap_text_to_fit_diameter(text, font_size, node_diameter, font_family)
+    
+    # 检查所有行是否都能适应节点宽度
+    available_width = node_diameter * 0.95
+    for line in lines:
+        line_width = estimate_text_width(line, font_size, font_family)
+        if line_width > available_width:
+            return False, lines
+    
+    # 检查总高度是否适应节点高度
+    available_height = node_diameter * 0.95
+    line_height = font_size * 1.2
+    total_height = (len(lines) - 1) * line_height + font_size
+    
+    if total_height > available_height:
+        return False, lines
+    
+    return True, lines
+
 def calculate_optimal_font_size(text, node_diameter, font_family='Times New Roman', min_font_size=4, max_font_size=100):
     """
     根据文本和节点直径计算最优字体大小
-    使用二分查找法找到最大的字体大小，使得文本刚好能适应节点
+    尽量提高字体大小到max_font_size，通过换行单词来适应
     
     Args:
         text: 文本内容
@@ -156,31 +189,26 @@ def calculate_optimal_font_size(text, node_diameter, font_family='Times New Roma
     Returns:
         float: 计算出的最优字体大小
     """
-    # 激进策略：尽可能多地使用节点空间（留5%边距）
-    available_width = node_diameter * 0.95
-    available_height = node_diameter * 0.95
-    
-    # 使用二分查找找最优字体大小
+    # 从最大字体开始，逐步降低，找到能适应的最大字体
+    # 使用二分查找加速这个过程
     left, right = min_font_size, max_font_size
     optimal_size = min_font_size
     
     while left <= right:
         mid = (left + right) / 2
-        text_width = estimate_text_width(text, mid, font_family)
+        can_fit, _ = can_fit_with_wrapping(text, mid, node_diameter, font_family)
         
-        # 估算文本高度（大约为字体大小的1.2倍）
-        text_height = mid * 1.2
-        
-        # 检查文本是否能适应节点
-        if text_width <= available_width and text_height <= available_height:
+        if can_fit:
+            # 当前字体大小可以适应，尝试更大的
             optimal_size = mid
-            left = mid + 0.5  # 尝试更大的字体
+            left = mid + 0.5
         else:
-            right = mid - 0.5  # 尝试更小的字体
+            # 当前字体大小不能适应，尝试更小的
+            right = mid - 0.5
     
     return max(optimal_size, min_font_size)
 
-def adjust_node_labels_in_tree(tree, root, auto_font_size=False, min_font_size=None):
+def adjust_node_labels_in_tree(tree, root, auto_font_size=False, min_font_size=None, max_font_size=None):
     """
     在内存中调整SVG树中节点标签的文本，使其适应节点直径（不保存文件）
     
@@ -188,7 +216,8 @@ def adjust_node_labels_in_tree(tree, root, auto_font_size=False, min_font_size=N
         tree: ElementTree对象
         root: 根元素
         auto_font_size: 是否自动调整字体大小以适应节点
-        min_font_size: 最小字体大小（如果指定，将尽力达到这个大小）
+        min_font_size: 最小字体大小（字体底线）
+        max_font_size: 最大字体大小（初始目标，会根据最大节点调整）
     
     Returns:
         int: 修改的节点数量
@@ -205,11 +234,45 @@ def adjust_node_labels_in_tree(tree, root, auto_font_size=False, min_font_size=N
     
     # 创建节点ID到节点信息的映射
     node_map = {}
+    max_node_diameter = 0
     for circle in nodes_group.findall(f'.//{{{svg_ns}}}circle'):
         node_class = circle.get('class', '')
         node_r = float(circle.get('r', '0'))
         node_diameter = node_r * 2  # 直径 = 半径 × 2
         node_map[node_class] = node_diameter
+        max_node_diameter = max(max_node_diameter, node_diameter)
+    
+    # 如果启用自动字体大小且指定了max_font_size，先在最大节点上计算目标字体
+    actual_max_font_size = max_font_size
+    if auto_font_size and max_font_size is not None and max_node_diameter > 0:
+        # 第一阶段：找到最大节点对应的文本，在其上计算能达到的最大字体大小
+        max_node_class = None
+        max_node_text = None
+        
+        for text_elem in labels_group.findall(f'.//{{{svg_ns}}}text'):
+            node_class = text_elem.get('class', '')
+            if node_class in node_map and abs(node_map[node_class] - max_node_diameter) < 0.01:
+                max_node_class = node_class
+                max_node_text = (text_elem.text or '').strip()
+                if max_node_text:
+                    break
+        
+        # 在最大节点上计算能达到的最优字体大小
+        if max_node_text:
+            calc_min_font_size = min_font_size if min_font_size is not None else 4
+            achievable_font_size = calculate_optimal_font_size(
+                max_node_text, 
+                max_node_diameter, 
+                'Times New Roman', 
+                calc_min_font_size, 
+                max_font_size
+            )
+            actual_max_font_size = achievable_font_size
+            logging.info(f"Smart sizing strategy:")
+            logging.info(f"  Max node diameter: {max_node_diameter:.1f}px")
+            logging.info(f"  Max node text: '{max_node_text[:30]}...' (len={len(max_node_text)})")
+            logging.info(f"  Target max font size: {max_font_size:.1f}pt -> Achievable: {actual_max_font_size:.1f}pt")
+            logging.info(f"  Using {actual_max_font_size:.1f}pt as ceiling for all nodes\n")
     
     # 处理每个文本标签
     modified_count = 0
@@ -240,30 +303,36 @@ def adjust_node_labels_in_tree(tree, root, auto_font_size=False, min_font_size=N
             else:
                 lines_initial = [text_content]
             
+            # 确定字体大小的范围
+            # 使用 actual_max_font_size（由最大节点确定）而不是原始的 max_font_size
+            calc_min_font_size = int(min_font_size) if min_font_size is not None else 4
+            calc_max_font_size = int(actual_max_font_size) if actual_max_font_size is not None else 100
+            
             # 对于多行文本，考虑多行所需的高度空间
             if len(lines_initial) > 1:
                 # 多行情况：为每一行计算最优字体大小，取最小值
                 optimal_sizes = []
                 for line in lines_initial:
-                    opt_size = calculate_optimal_font_size(line, node_diameter, font_family)
+                    opt_size = calculate_optimal_font_size(line, node_diameter, font_family, calc_min_font_size, calc_max_font_size)
                     optimal_sizes.append(opt_size)
                 optimal_font_size = min(optimal_sizes)
             else:
                 # 单行情况：直接计算最优字体大小
-                optimal_font_size = calculate_optimal_font_size(text_content, node_diameter, font_family)
-            
-            # 如果指定了最小字体大小，使用最大值（作为底线，不是固定值）
-            if min_font_size is not None:
-                optimal_font_size = max(optimal_font_size, min_font_size)
+                optimal_font_size = calculate_optimal_font_size(text_content, node_diameter, font_family, calc_min_font_size, calc_max_font_size)
             
             if optimal_font_size != font_size:
                 text_elem.set('font-size', str(optimal_font_size))
                 font_size = optimal_font_size
                 modified_count += 1
-                if min_font_size is not None:
-                    logging.info(f"  Auto-adjusted font size for node '{node_class}': {text_content[:30]}... -> {optimal_font_size:.1f}pt (min: {min_font_size:.1f}pt)")
-                else:
-                    logging.info(f"  Auto-adjusted font size for node '{node_class}': {text_content[:30]}... -> {optimal_font_size:.1f}pt")
+                constraint_info = ""
+                if min_font_size is not None or max_font_size is not None:
+                    constraints = []
+                    if min_font_size is not None:
+                        constraints.append(f"min: {min_font_size:.1f}pt")
+                    if max_font_size is not None:
+                        constraints.append(f"max: {max_font_size:.1f}pt")
+                    constraint_info = f" ({', '.join(constraints)})"
+                logging.info(f"  Auto-adjusted font size for node '{node_class}': {text_content[:30]}... -> {optimal_font_size:.1f}pt{constraint_info}")
         
         # 第二步：检查最终字体大小下是否需要换行
         text_width = estimate_text_width(text_content, font_size, font_family)
@@ -304,7 +373,7 @@ def adjust_node_labels_in_tree(tree, root, auto_font_size=False, min_font_size=N
     
     return modified_count
 
-def add_legend_to_svg(svg_file, layer_color_map, output_file=None, auto_font_size=False, min_font_size=None):
+def add_legend_to_svg(svg_file, layer_color_map, output_file=None, auto_font_size=False, min_font_size=None, max_font_size=None):
     """
     在SVG文件的右上方添加图例，同时进行节点标签换行调整
     只保存一个文件，不修改源文件
@@ -314,7 +383,8 @@ def add_legend_to_svg(svg_file, layer_color_map, output_file=None, auto_font_siz
         layer_color_map: layer到color的映射字典
         output_file: 输出文件路径，如果为None则自动生成新文件名（不覆盖原文件）
         auto_font_size: 是否自动调整节点字体大小以适应节点直径
-        min_font_size: 最小字体大小（如果指定且启用auto_font_size，将尽力达到这个大小）
+        min_font_size: 最小字体大小（字体底线）
+        max_font_size: 最大字体大小（字体上限）
     """
     # SVG命名空间
     svg_ns = 'http://www.w3.org/2000/svg'
@@ -325,19 +395,21 @@ def add_legend_to_svg(svg_file, layer_color_map, output_file=None, auto_font_siz
     
     # 先进行节点标签换行和字体调整
     if auto_font_size:
+        constraints = []
         if min_font_size is not None:
-            logging.info(f"Auto-adjusting node label font sizes to minimum {min_font_size:.1f}pt (with text wrapping)...")
+            constraints.append(f"min: {min_font_size:.1f}pt")
+        if max_font_size is not None:
+            constraints.append(f"max: {max_font_size:.1f}pt")
+        if constraints:
+            logging.info(f"Auto-adjusting node label font sizes ({', '.join(constraints)}) with text wrapping...")
         else:
             logging.info("Auto-adjusting node label font sizes and checking text wrapping...")
     else:
         logging.info("Checking and adjusting node label text...")
-    modified_count = adjust_node_labels_in_tree(tree, root, auto_font_size, min_font_size)
+    modified_count = adjust_node_labels_in_tree(tree, root, auto_font_size, min_font_size, max_font_size)
     if modified_count > 0:
         if auto_font_size:
-            if min_font_size is not None:
-                logging.info(f"Adjusted font sizes to {min_font_size:.1f}pt and/or text wrapping for {modified_count} node labels\n")
-            else:
-                logging.info(f"Adjusted font sizes and/or text wrapping for {modified_count} node labels\n")
+            logging.info(f"Adjusted font sizes and/or text wrapping for {modified_count} node labels\n")
         else:
             logging.info(f"Adjusted text wrapping for {modified_count} node labels\n")
     else:
@@ -515,7 +587,8 @@ def main():
     parser.add_argument('--png-output', help='PNG output file path (default: auto-generate)')
     parser.add_argument('--dpi', type=int, default=300, help='PNG output resolution (default: 300)')
     parser.add_argument('--auto-font-size', action='store_true', help='Auto-adjust node label font sizes to fit within node diameter')
-    parser.add_argument('--min-font-size', type=float, help='Minimum font size (requires --auto-font-size, will try to achieve this size through text wrapping)')
+    parser.add_argument('--min-font-size', type=float, help='Minimum font size (font size floor, requires --auto-font-size)')
+    parser.add_argument('--max-font-size', type=float, help='Maximum font size (font size ceiling, requires --auto-font-size, scales proportionally based on node size)')
     
     args = parser.parse_args()
     
@@ -546,7 +619,7 @@ def main():
         logging.info("=" * 60)
         logging.info("Processing SVG file (text wrapping and legend addition)...")
         logging.info("=" * 60)
-        output_svg = add_legend_to_svg(args.svg_file, layer_color_map, args.output, args.auto_font_size, args.min_font_size)
+        output_svg = add_legend_to_svg(args.svg_file, layer_color_map, args.output, args.auto_font_size, args.min_font_size, args.max_font_size)
         
         # 如果指定了PNG转换，则转换
         if args.png:
