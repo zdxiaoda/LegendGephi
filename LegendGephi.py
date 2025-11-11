@@ -141,13 +141,53 @@ def wrap_text_to_fit_diameter(text, font_size, node_diameter, font_family='Times
     
     return lines
 
-def adjust_node_labels_in_tree(tree, root):
+def calculate_optimal_font_size(text, node_diameter, font_family='Times New Roman', min_font_size=4, max_font_size=100):
+    """
+    根据文本和节点直径计算最优字体大小
+    使用二分查找法找到最大的字体大小，使得文本刚好能适应节点
+    
+    Args:
+        text: 文本内容
+        node_diameter: 节点直径
+        font_family: 字体族
+        min_font_size: 最小字体大小
+        max_font_size: 最大字体大小
+    
+    Returns:
+        float: 计算出的最优字体大小
+    """
+    # 激进策略：尽可能多地使用节点空间（留5%边距）
+    available_width = node_diameter * 0.95
+    available_height = node_diameter * 0.95
+    
+    # 使用二分查找找最优字体大小
+    left, right = min_font_size, max_font_size
+    optimal_size = min_font_size
+    
+    while left <= right:
+        mid = (left + right) / 2
+        text_width = estimate_text_width(text, mid, font_family)
+        
+        # 估算文本高度（大约为字体大小的1.2倍）
+        text_height = mid * 1.2
+        
+        # 检查文本是否能适应节点
+        if text_width <= available_width and text_height <= available_height:
+            optimal_size = mid
+            left = mid + 0.5  # 尝试更大的字体
+        else:
+            right = mid - 0.5  # 尝试更小的字体
+    
+    return max(optimal_size, min_font_size)
+
+def adjust_node_labels_in_tree(tree, root, auto_font_size=False):
     """
     在内存中调整SVG树中节点标签的文本，使其适应节点直径（不保存文件）
     
     Args:
         tree: ElementTree对象
         root: 根元素
+        auto_font_size: 是否自动调整字体大小以适应节点
     
     Returns:
         int: 修改的节点数量
@@ -186,45 +226,72 @@ def adjust_node_labels_in_tree(tree, root):
         font_family = text_elem.get('font-family', 'Times New Roman')
         node_diameter = node_map[node_class]
         
-        # 检查是否需要换行
+        x = text_elem.get('x', '0')
+        y = text_elem.get('y', '0')
+        
+        # 第一步：先检查是否需要换行
         text_width = estimate_text_width(text_content, font_size, font_family)
+        lines_to_use = None
+        
         if text_width > node_diameter:
             # 需要换行
-            lines = wrap_text_to_fit_diameter(text_content, font_size, node_diameter, font_family)
+            lines_to_use = wrap_text_to_fit_diameter(text_content, font_size, node_diameter, font_family)
+        else:
+            lines_to_use = [text_content]
+        
+        # 第二步：如果启用自动字体大小调整，计算最优字体大小
+        if auto_font_size:
+            # 对于多行文本，考虑多行所需的高度空间
+            if len(lines_to_use) > 1:
+                # 多行情况：为每一行计算最优字体大小，取最小值
+                optimal_sizes = []
+                for line in lines_to_use:
+                    opt_size = calculate_optimal_font_size(line, node_diameter, font_family)
+                    optimal_sizes.append(opt_size)
+                optimal_font_size = min(optimal_sizes)
+            else:
+                # 单行情况：直接计算最优字体大小
+                optimal_font_size = calculate_optimal_font_size(text_content, node_diameter, font_family)
             
-            if len(lines) > 1:
-                # 获取原始位置和样式
-                x = text_elem.get('x', '0')
-                y = text_elem.get('y', '0')
-                fill = text_elem.get('fill', '#000000')
-                style = text_elem.get('style', '')
-                
-                # 计算行高（字体大小的1.2倍）
-                line_height = font_size * 1.2
-                
-                # 计算总高度，用于垂直居中
-                total_height = (len(lines) - 1) * line_height
-                start_y = float(y) - total_height / 2
-                
-                # 清除原始文本内容
-                text_elem.text = None
-                
-                # 为每一行创建tspan元素
-                for i, line in enumerate(lines):
-                    tspan = ET.SubElement(text_elem, f'{{{svg_ns}}}tspan', {
-                        'x': x,
-                        'y': str(start_y + i * line_height),
-                        'text-anchor': 'middle',
-                        'dominant-baseline': 'central'
-                    })
-                    tspan.text = line
-                
+            if optimal_font_size != font_size:
+                text_elem.set('font-size', str(optimal_font_size))
+                font_size = optimal_font_size
                 modified_count += 1
-                logging.info(f"  Wrapped node '{node_class}': {text_content[:30]}...")
+                logging.info(f"  Auto-adjusted font size for node '{node_class}': {text_content[:30]}... -> {optimal_font_size:.1f}pt")
+                
+                # 重新计算换行（使用新的字体大小）
+                text_width = estimate_text_width(text_content, font_size, font_family)
+                if text_width > node_diameter:
+                    lines_to_use = wrap_text_to_fit_diameter(text_content, font_size, node_diameter, font_family)
+        
+        # 第三步：如果需要换行，进行换行处理
+        if len(lines_to_use) > 1:
+            # 计算行高（字体大小的1.2倍）
+            line_height = font_size * 1.2
+            
+            # 计算总高度，用于垂直居中
+            total_height = (len(lines_to_use) - 1) * line_height
+            start_y = float(y) - total_height / 2
+            
+            # 清除原始文本内容
+            text_elem.text = None
+            
+            # 为每一行创建tspan元素
+            for i, line in enumerate(lines_to_use):
+                tspan = ET.SubElement(text_elem, f'{{{svg_ns}}}tspan', {
+                    'x': x,
+                    'y': str(start_y + i * line_height),
+                    'text-anchor': 'middle',
+                    'dominant-baseline': 'central'
+                })
+                tspan.text = line
+            
+            modified_count += 1
+            logging.info(f"  Wrapped node '{node_class}': {text_content[:30]}...")
     
     return modified_count
 
-def add_legend_to_svg(svg_file, layer_color_map, output_file=None):
+def add_legend_to_svg(svg_file, layer_color_map, output_file=None, auto_font_size=False):
     """
     在SVG文件的右上方添加图例，同时进行节点标签换行调整
     只保存一个文件，不修改源文件
@@ -233,6 +300,7 @@ def add_legend_to_svg(svg_file, layer_color_map, output_file=None):
         svg_file: SVG文件路径
         layer_color_map: layer到color的映射字典
         output_file: 输出文件路径，如果为None则自动生成新文件名（不覆盖原文件）
+        auto_font_size: 是否自动调整节点字体大小以适应节点直径
     """
     # SVG命名空间
     svg_ns = 'http://www.w3.org/2000/svg'
@@ -241,11 +309,17 @@ def add_legend_to_svg(svg_file, layer_color_map, output_file=None):
     tree = ET.parse(svg_file)
     root = tree.getroot()
     
-    # 先进行节点标签换行调整
-    logging.info("Checking and adjusting node label text...")
-    modified_count = adjust_node_labels_in_tree(tree, root)
+    # 先进行节点标签换行和字体调整
+    if auto_font_size:
+        logging.info("Auto-adjusting node label font sizes and checking text wrapping...")
+    else:
+        logging.info("Checking and adjusting node label text...")
+    modified_count = adjust_node_labels_in_tree(tree, root, auto_font_size)
     if modified_count > 0:
-        logging.info(f"Adjusted text wrapping for {modified_count} node labels\n")
+        if auto_font_size:
+            logging.info(f"Adjusted font sizes and/or text wrapping for {modified_count} node labels\n")
+        else:
+            logging.info(f"Adjusted text wrapping for {modified_count} node labels\n")
     else:
         logging.info("All node label texts already fit within node diameter, no adjustment needed\n")
     
@@ -420,6 +494,7 @@ def main():
     parser.add_argument('-p', '--png', action='store_true', help='Convert SVG to PNG')
     parser.add_argument('--png-output', help='PNG output file path (default: auto-generate)')
     parser.add_argument('--dpi', type=int, default=300, help='PNG output resolution (default: 300)')
+    parser.add_argument('--auto-font-size', action='store_true', help='Auto-adjust node label font sizes to fit within node diameter')
     
     args = parser.parse_args()
     
@@ -450,7 +525,7 @@ def main():
         logging.info("=" * 60)
         logging.info("Processing SVG file (text wrapping and legend addition)...")
         logging.info("=" * 60)
-        output_svg = add_legend_to_svg(args.svg_file, layer_color_map, args.output)
+        output_svg = add_legend_to_svg(args.svg_file, layer_color_map, args.output, args.auto_font_size)
         
         # 如果指定了PNG转换，则转换
         if args.png:
