@@ -380,7 +380,7 @@ def adjust_node_labels_in_tree(tree, root, auto_font_size=False, min_font_size=N
     
     return modified_count
 
-def add_legend_to_svg(svg_file, layer_color_map, output_file=None, auto_font_size=False, min_font_size=None, max_font_size=None):
+def add_legend_to_svg(svg_file, layer_color_map, output_file=None, auto_font_size=False, min_font_size=None, max_font_size=None, layer_order=None):
     """
     在SVG文件的右上方添加图例，同时进行节点标签换行调整
     只保存一个文件，不修改源文件
@@ -392,6 +392,7 @@ def add_legend_to_svg(svg_file, layer_color_map, output_file=None, auto_font_siz
         auto_font_size: 是否自动调整节点字体大小以适应节点直径
         min_font_size: 最小字体大小（字体底线）
         max_font_size: 最大字体大小（字体上限）
+        layer_order: 图例层的顺序列表（可选）
     """
     # SVG命名空间
     svg_ns = 'http://www.w3.org/2000/svg'
@@ -489,7 +490,31 @@ def add_legend_to_svg(svg_file, layer_color_map, output_file=None, auto_font_siz
     
     # 为每个layer添加图例项
     y_offset = title_font_size + 15
-    for i, (layer, color) in enumerate(sorted(layer_color_map.items())):
+    
+    # 确定图例项的顺序
+    if layer_order:
+        loop_items = []
+        # 先添加用户指定的层
+        for layer in layer_order:
+            if layer in layer_color_map:
+                loop_items.append((layer, layer_color_map[layer]))
+            else:
+                logging.warning(f"Warning: Layer '{layer}' specified in order not found in GEXF data.")
+        
+        # 添加未指定的层（按字母顺序）
+        existing_layers = set(item[0] for item in loop_items)
+        remaining_items = []
+        for layer, color in sorted(layer_color_map.items()):
+            if layer not in existing_layers:
+                remaining_items.append((layer, color))
+        
+        if remaining_items:
+            logging.info(f"Appending {len(remaining_items)} unspecified layers to the end.")
+            loop_items.extend(remaining_items)
+    else:
+        loop_items = sorted(layer_color_map.items())
+
+    for i, (layer, color) in enumerate(loop_items):
         item_y = legend_y + y_offset + i * item_spacing
         
         # 颜色方块（增大）
@@ -632,11 +657,34 @@ def main():
         logging.info(f"\nFound {len(layer_color_map)} different Layers")
         logging.info("")
         
+        # 交互式询问用户是否调整图例顺序
+        layer_order = None
+        # 检查是否在交互式终端中运行（简单检查stdin是否连接到终端）
+        if sys.stdin.isatty():
+            try:
+                print("\n" + "=" * 60)
+                print("Detected Layers:")
+                for layer in sorted(layer_color_map.keys()):
+                    print(f"  - {layer}")
+                print("=" * 60)
+                
+                use_custom_order = input("Do you want to specify a custom order for the legend? (y/N): ").strip().lower()
+                if use_custom_order == 'y':
+                    print("Enter the layers in the desired order (comma-separated):")
+                    print("Example: Layer1, Layer2, Layer3")
+                    order_input = input("Order: ").strip()
+                    if order_input:
+                        layer_order = [l.strip() for l in order_input.split(',')]
+                        print(f"Custom order set: {layer_order}\n")
+            except KeyboardInterrupt:
+                print("\nOperation cancelled by user.")
+                return
+        
         # 在SVG文件中添加图例并调整节点标签（只保存一个文件）
         logging.info("=" * 60)
         logging.info("Processing SVG file (text wrapping and legend addition)...")
         logging.info("=" * 60)
-        output_svg = add_legend_to_svg(args.svg_file, layer_color_map, args.output, args.auto_font_size, args.min_font_size, args.max_font_size)
+        output_svg = add_legend_to_svg(args.svg_file, layer_color_map, args.output, args.auto_font_size, args.min_font_size, args.max_font_size, layer_order=layer_order)
         
         # 如果指定了PNG转换，则转换
         if args.png:
