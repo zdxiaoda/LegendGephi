@@ -286,8 +286,8 @@ def adjust_node_labels_in_tree(tree, root, auto_font_size=False, min_font_size=N
         if not text_content:
             continue
         
-        # 首字母大写
-        text_content = text_content.capitalize()
+        # 不修改大小写
+        # text_content = text_content.capitalize()
         
         font_size = float(text_elem.get('font-size', '12'))
         font_family = text_elem.get('font-family', 'Times New Roman')
@@ -436,28 +436,35 @@ def add_legend_to_svg(svg_file, layer_color_map, output_file=None, auto_font_siz
         min_x = -width / 2
         min_y = -height / 2
     
-    # 计算右下角位置（留一些边距）
-    margin = 50
-    # 增大图例尺寸
-    legend_width = 300  # 图例宽度
-    legend_x = min_x + width - legend_width - margin
-    
     # 图例参数
     title_font_size = 30  # 标题字体大小
     item_font_size = 22   # 项目字体大小
     color_box_size = 28   # 颜色方块大小
     item_spacing = 50     # 项目间距
     padding = 15          # 内边距
+    margin = 50           # 边距
+    legend_width = 300    # 图例宽度
     
-    # 首先计算图例高度来确定 legend_y
-    bg_height_temp = len(layer_color_map) * item_spacing + padding * 2 + title_font_size + 10
-    legend_y = min_y + height - bg_height_temp - margin  # 右下角位置
+    # 计算图例高度
+    bg_height = len(layer_color_map) * item_spacing + padding * 2 + title_font_size + 10
+    
+    # 扩展SVG视图区域以容纳图例（新开一个地方）
+    # 在右侧增加宽度
+    original_width = width
+    width = original_width + legend_width + margin * 2
+    
+    # 更新viewBox和width属性
+    root.set('viewBox', f"{min_x} {min_y} {width} {height}")
+    root.set('width', str(width))
+    
+    # 计算图例位置：在原来的右侧，靠下对齐
+    legend_x = min_x + original_width + margin
+    legend_y = min_y + height - bg_height - margin
     
     # 创建图例组（使用SVG命名空间）
     legend_group = ET.Element(f'{{{svg_ns}}}g', {'id': 'legend', 'class': 'legend'})
     
     # 图例背景（白色半透明背景）
-    bg_height = len(layer_color_map) * item_spacing + padding * 2 + title_font_size + 10
     bg_rect = ET.SubElement(legend_group, f'{{{svg_ns}}}rect', {
         'x': str(legend_x - padding),
         'y': str(legend_y - padding),
